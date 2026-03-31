@@ -26,6 +26,7 @@ class IssueType(str, Enum):
     HEADER = "header"
     ZAP = "zap"
     NUCLEI = "nuclei"
+    SSL = "ssl"
     CUSTOM = "custom"
 
 

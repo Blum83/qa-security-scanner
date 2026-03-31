@@ -8,6 +8,7 @@ from app.core.store import get, save
 from app.models.scan import ScanStatus
 from app.services.header_checker import check_headers
 from app.services.nuclei_scanner import scan_with_nuclei
+from app.services.ssl_auditor import audit_ssl
 from app.services.zap_scanner import scan_with_zap
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,24 @@ async def run_scan(scan_id: str, target_url: str) -> None:
         record.phase = "Header checks complete"
         save(record)
         logger.info("Scan %s: header checks complete — %d issues", scan_id, len(header_issues))
+
+        # Phase 1.5: SSL/TLS Audit
+        record.phase = "Auditing SSL/TLS certificate"
+        record.progress = 12
+        save(record)
+        logger.info("Scan %s: running SSL/TLS audit", scan_id)
+
+        ssl_issues = await audit_ssl(target_url)
+
+        if _is_cancelled(scan_id):
+            logger.info("Scan %s: cancelled during SSL audit", scan_id)
+            return
+
+        record.issues.extend(ssl_issues)
+        record.progress = 15
+        record.phase = "SSL audit complete"
+        save(record)
+        logger.info("Scan %s: SSL audit complete — %d issues", scan_id, len(ssl_issues))
 
         # Phase 2: Run ZAP and Nuclei in parallel
         if _is_cancelled(scan_id):

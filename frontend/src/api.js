@@ -27,3 +27,32 @@ export async function getHealth() {
 export function getScanPdfUrl(scanId) {
   return `${API_BASE}/scan/${scanId}/pdf`;
 }
+
+export async function listSchedules() {
+  const { data } = await client.get("/schedules");
+  return data;
+}
+
+export async function createSchedule(payload) {
+  const { data } = await client.post("/schedules", payload);
+  return data;
+}
+
+export async function updateSchedule(scheduleId, payload) {
+  const { data } = await client.put(`/schedules/${scheduleId}`, payload);
+  return data;
+}
+
+export async function deleteSchedule(scheduleId) {
+  await client.delete(`/schedules/${scheduleId}`);
+}
+
+export async function pauseSchedule(scheduleId) {
+  const { data } = await client.post(`/schedules/${scheduleId}/pause`);
+  return data;
+}
+
+export async function resumeSchedule(scheduleId) {
+  const { data } = await client.post(`/schedules/${scheduleId}/resume`);
+  return data;
+}

@@ -28,6 +28,17 @@ class Settings(BaseSettings):
     nuclei_severities: list[str] = ["critical", "high", "medium", "low"]  # Filter by severity
     nuclei_templates: Optional[str] = None  # Custom template path (None = all templates)
 
+    # Scheduler
+    scheduler_timezone: str = "UTC"
+
+    # Webhook notifications (SMTP for email)
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = "scanner@example.com"
+    smtp_use_tls: bool = True
+
     model_config = {"env_prefix": "QA_SCANNER_"}
 
 

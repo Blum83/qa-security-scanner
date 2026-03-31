@@ -55,3 +55,12 @@
 .navbar-link svg {
   flex-shrink: 0;
 }
+
+.navbar-link-btn {
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-size: inherit;
+  font-family: inherit;
+}

@@ -5,6 +5,7 @@ import ScanForm from "./components/ScanForm";
 import Features from "./components/Features";
 import ScanProgress from "./components/ScanProgress";
 import ScanReport from "./components/ScanReport";
+import ScheduleManager from "./components/ScheduleManager";
 import { startScan, getScan, stopScan, getHealth } from "./api";
 import "./App.css";
 
@@ -163,7 +164,7 @@ function App() {
 
   return (
     <div className="app">
-      <Navbar />
+      <Navbar onSchedules={() => setView("schedules")} />
       <main className="main">
         {error && <div className="error-banner">{error}</div>}
 
@@ -179,6 +180,9 @@ function App() {
         )}
         {view === "report" && (
           <ScanReport data={scanData} onReset={handleReset} scanId={scanId} />
+        )}
+        {view === "schedules" && (
+          <ScheduleManager onBack={() => setView("form")} />
         )}
       </main>
     </div>
