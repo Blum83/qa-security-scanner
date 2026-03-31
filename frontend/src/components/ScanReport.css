@@ -18,7 +18,25 @@
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
+  gap: 16px;
   margin-bottom: 24px;
+}
+
+.report-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.btn-pdf {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+}
+
+.btn-pdf::before {
+  content: "📄";
+  margin-right: 6px;
 }
 
 .report-header h2 {

@@ -1,6 +1,10 @@
 import "./Hero.css";
 
-function Hero() {
+function Hero({ scanners = {} }) {
+  const scannerStatuses = Object.entries(scanners)
+    .filter(([_, available]) => available)
+    .map(([name]) => name.charAt(0).toUpperCase() + name.slice(1));
+
   return (
     <section className="hero">
       <span className="hero-badge">SECURITY MADE SIMPLE</span>
@@ -13,6 +17,11 @@ function Hero() {
         A security scanning tool designed for QA engineers. Enter a URL and get
         human-readable security findings without the complexity.
       </p>
+      {scannerStatuses.length > 0 && (
+        <div className="scanner-status">
+          Available scanners: {scannerStatuses.join(", ")}
+        </div>
+      )}
     </section>
   );
 }

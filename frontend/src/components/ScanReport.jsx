@@ -1,8 +1,9 @@
+import { getScanPdfUrl } from "../api";
 import "./ScanReport.css";
 
 const RISK_ORDER = ["critical", "high", "medium", "low", "info"];
 
-function ScanReport({ data, onReset }) {
+function ScanReport({ data, onReset, scanId }) {
   if (!data) return null;
 
   const { status, target_url, summary, issues, error } = data;
@@ -41,9 +42,21 @@ function ScanReport({ data, onReset }) {
             <h2>Scan Results</h2>
             <p className="target-url">{target_url}</p>
           </div>
-          <button className="btn-outline" onClick={onReset}>
-            New Scan
-          </button>
+          <div className="report-actions">
+            {scanId && (
+              <a
+                href={getScanPdfUrl(scanId)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="btn-outline btn-pdf"
+              >
+                Download PDF
+              </a>
+            )}
+            <button className="btn-outline" onClick={onReset}>
+              New Scan
+            </button>
+          </div>
         </div>
 
         {summary && (
@@ -91,7 +104,7 @@ function ScanReport({ data, onReset }) {
 
 function SummaryCard({ label, count, level }) {
   return (
-    <div className={`summary-card risk-bg-${level}`}>
+    <div className={`summary-card risk/bg-${level}`}>
       <span className={`summary-count risk-${level}`}>{count}</span>
       <span className="summary-label">{label}</span>
     </div>

@@ -3,8 +3,9 @@ import logging
 import uuid
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import Response
 
-from app.core.store import get, save
+from app.core.store import get, save, get_all
 from app.models.scan import (
     ScanRecord,
     ScanReport,
@@ -14,6 +15,8 @@ from app.models.scan import (
     ScanSummary,
 )
 from app.services.scanner import run_scan
+from app.services.pdf_report import generate_pdf
+from app.utils.ssrf_protection import validate_url, SSRFError
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -21,8 +24,15 @@ router = APIRouter()
 
 @router.post("", response_model=ScanResponse)
 async def start_scan(request: ScanRequest):
-    scan_id = str(uuid.uuid4())
     target_url = str(request.url)
+
+    # SSRF protection: validate URL is not internal
+    try:
+        validate_url(target_url)
+    except SSRFError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    scan_id = str(uuid.uuid4())
 
     record = ScanRecord(
         scan_id=scan_id,
@@ -35,6 +45,16 @@ async def start_scan(request: ScanRequest):
     asyncio.create_task(run_scan(scan_id, target_url))
 
     return ScanResponse(scan_id=scan_id, status=ScanStatus.PENDING)
+
+
+@router.get("", response_model=list[ScanResponse])
+async def list_scans():
+    """List all scans (most recent first)."""
+    records = get_all()
+    return [
+        ScanResponse(scan_id=r.scan_id, status=r.status)
+        for r in records
+    ]
 
 
 @router.get("/{scan_id}", response_model=ScanReport)
@@ -64,6 +84,27 @@ async def get_scan(scan_id: str):
         summary=summary,
         issues=issues,
         error=record.error,
+    )
+
+
+@router.get("/{scan_id}/pdf")
+async def get_scan_pdf(scan_id: str):
+    """Download scan report as PDF."""
+    record = get(scan_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    if record.status != ScanStatus.COMPLETED:
+        raise HTTPException(status_code=400, detail="Scan is not completed")
+
+    pdf_bytes = generate_pdf(record)
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename=scan-{scan_id[:8]}.pdf"
+        },
     )
 
 

@@ -1,16 +1,24 @@
 """OWASP ZAP integration via its REST API."""
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import re
+from typing import Optional
 
 import httpx
 
 from app.core.config import settings
 from app.core.store import get, save
 from app.models.scan import IssueType, RiskLevel, ScanStatus, SecurityIssue
+from app.utils.url_priority import prioritize_urls
 
 logger = logging.getLogger(__name__)
+
+# Export for use by scanner.py
+zap_base_url = settings.zap_base_url
+zap_api_key = settings.zap_api_key
 
 ZAP_RISK_MAP = {
     "0": RiskLevel.INFO,
@@ -81,22 +89,61 @@ async def stop_zap_scans(scan_id: str) -> None:
 
 
 async def scan_with_zap(scan_id: str, target_url: str) -> list[SecurityIssue]:
-    """Run ZAP spider + active scan and return normalized issues."""
+    """Run ZAP spider + active scan and return normalized issues.
+    
+    Strategy:
+    1. Spider crawls the site to discover all URLs
+    2. Active scan runs on the BASE URL only — ZAP automatically tests
+       all URLs in its context (discovered by spider)
+    3. Hard timeout prevents infinite scanning
+    """
     try:
         async with httpx.AsyncClient(base_url=settings.zap_base_url, timeout=30.0) as client:
             # Check ZAP is reachable
             await client.get("/JSON/core/view/version/")
             logger.info("Scan %s: ZAP is reachable", scan_id)
 
-            # Spider
+            # Phase 1: Spider — discovers URLs
             if _is_cancelled(scan_id):
                 return []
-            await _run_spider(client, scan_id, target_url)
+            discovered_urls = await _run_spider(client, scan_id, target_url)
 
-            # Active scan
+            # Show URL prioritization info
+            if discovered_urls:
+                prioritized = prioritize_urls(discovered_urls, max_urls=5)
+                logger.info(
+                    "Scan %s: spider discovered %d URLs. Top 5 for reference:",
+                    scan_id, len(discovered_urls),
+                )
+                for url, score, reasons in prioritized:
+                    logger.info("  [score=%d] %s — %s", score, url, ", ".join(reasons))
+
+            # Phase 2: Active scan on base URL only
+            # ZAP's active scan automatically covers all URLs in its context
+            # (i.e., everything the spider found), so we don't need to scan
+            # each URL individually.
             if _is_cancelled(scan_id):
                 return []
-            await _run_active_scan(client, scan_id, target_url)
+
+            record = get(scan_id)
+            if record:
+                record.phase = "Running active scan"
+                record.progress = 40
+                save(record)
+
+            try:
+                await asyncio.wait_for(
+                    _run_active_scan(client, scan_id, target_url),
+                    timeout=settings.zap_active_scan_timeout_seconds or 300,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Scan %s: active scan timed out after %ds — fetching partial results",
+                    scan_id, settings.zap_active_scan_timeout_seconds or 300,
+                )
+                if record:
+                    record.phase = "Active scan timed out (partial results)"
+                    save(record)
 
             if _is_cancelled(scan_id):
                 return []
@@ -139,16 +186,15 @@ async def scan_with_zap(scan_id: str, target_url: str) -> list[SecurityIssue]:
         ]
 
 
-async def _run_spider(client: httpx.AsyncClient, scan_id: str, target_url: str) -> None:
+async def _run_spider(client: httpx.AsyncClient, scan_id: str, target_url: str) -> list[str]:
+    """Run ZAP spider and return list of discovered URLs."""
     # Set spider options to limit crawl scope
     try:
-        # Set max nodes limit
         await client.get(
             "/JSON/spider/action/setOptionMaxChildren/", 
             params={"Integer": settings.zap_max_children or 0, "apikey": settings.zap_api_key},
             timeout=30.0
         )
-        # Set max depth
         await client.get(
             "/JSON/spider/action/setOptionMaxDepth/", 
             params={"Integer": settings.zap_max_depth, "apikey": settings.zap_api_key},
@@ -159,7 +205,6 @@ async def _run_spider(client: httpx.AsyncClient, scan_id: str, target_url: str) 
     except Exception as exc:
         logger.warning("Scan %s: failed to set spider options — %s", scan_id, exc)
     
-    # Build spider params with limits
     params = {
         "url": target_url,
         "apikey": settings.zap_api_key,
@@ -167,12 +212,10 @@ async def _run_spider(client: httpx.AsyncClient, scan_id: str, target_url: str) 
         "threadCount": settings.zap_thread_count,
     }
     
-    # Add optional limits
     if settings.zap_max_children is not None:
         params["maxChildren"] = settings.zap_max_children
     
-    logger.info("Scan %s: starting spider with params: maxDepth=%s, maxChildren=%s, threads=%s",
-                scan_id, settings.zap_max_depth, settings.zap_max_children, settings.zap_thread_count)
+    logger.info("Scan %s: starting spider", scan_id)
     
     try:
         resp = await client.get("/JSON/spider/action/scan/", params=params, timeout=60.0)
@@ -180,18 +223,16 @@ async def _run_spider(client: httpx.AsyncClient, scan_id: str, target_url: str) 
         data = resp.json()
     except Exception as exc:
         logger.warning("Scan %s: spider start request failed — %s: %s", scan_id, type(exc).__name__, exc)
-        return
+        return [target_url]
     
-    # Check if response indicates an error
     if "scan" not in data or data.get("scan") is None:
         logger.warning("Scan %s: spider did not start — response: %s", scan_id, data)
-        return
+        return [target_url]
         
     spider_id = data.get("scan")
-
     if not spider_id:
         logger.warning("Scan %s: spider did not start — no scan ID returned", scan_id)
-        return
+        return [target_url]
 
     logger.info("Scan %s: spider started (id=%s)", scan_id, spider_id)
 
@@ -199,26 +240,16 @@ async def _run_spider(client: httpx.AsyncClient, scan_id: str, target_url: str) 
         await asyncio.sleep(2)
 
         if _is_cancelled(scan_id):
-            return
+            return []
 
         try:
             resp = await client.get("/JSON/spider/view/status/", params={"scanId": spider_id}, timeout=30.0)
             resp.raise_for_status()
-            status_data = resp.json()
-            progress = int(status_data.get("status", "0"))
+            progress = int(resp.json().get("status", "0"))
         except Exception as exc:
-            logger.warning("Scan %s: spider status request failed — %s: %s", scan_id, type(exc).__name__, exc)
-            # Try to get progress from results count as fallback
-            try:
-                r = await client.get("/JSON/spider/view/results/", params={"scanId": spider_id}, timeout=30.0)
-                urls_found = len(r.json().get("results", []))
-                if urls_found > 0:
-                    logger.info("Scan %s: spider found %d URLs before status check failed", scan_id, urls_found)
-            except Exception:
-                pass
+            logger.warning("Scan %s: spider status request failed — %s", scan_id, type(exc).__name__)
             break
 
-        # Fetch spider results count and log milestone progress
         details = []
         try:
             r = await client.get("/JSON/spider/view/results/", params={"scanId": spider_id}, timeout=30.0)
@@ -227,53 +258,44 @@ async def _run_spider(client: httpx.AsyncClient, scan_id: str, target_url: str) 
             urls_found = len(results)
             if urls_found:
                 details.append(f"Discovered {urls_found} URLs so far")
-                # Log milestone progress for debugging
                 if urls_found in [10, 50, 100, 200, 300, 400, 500]:
                     logger.info("Scan %s: spider milestone — %d URLs discovered", scan_id, urls_found)
-                    # Log sample URLs for insight
-                    sample = results[:3] if results else []
-                    if sample:
-                        logger.debug("Scan %s: sample URLs: %s", scan_id, sample)
         except Exception:
             pass
 
         record = get(scan_id)
         if record and record.status == ScanStatus.RUNNING:
             record.progress = 10 + int(progress * 0.3)
-            # Include discovered URL count in phase text if available
-            if details and len(details) > 0:
+            if details:
                 url_info = details[0][:40] + "..." if len(details[0]) > 40 else details[0]
-                record.phase = f"Crawling the website ({url_info}) — {progress}%"
+                record.phase = f"Crawling ({url_info}) — {progress}%"
             else:
-                record.phase = f"Crawling the website (ZAP Spider) — {progress}%"
+                record.phase = f"Crawling (ZAP Spider) — {progress}%"
             record.phase_details = details
             save(record)
 
         if progress >= 100:
             break
 
-    # Log final spider results count
+    # Return discovered URLs
     try:
         r = await client.get("/JSON/spider/view/results/", params={"scanId": spider_id}, timeout=30.0)
         r.raise_for_status()
-        total_urls = len(r.json().get("results", []))
-        logger.info("Scan %s: spider complete — discovered %d total URLs", scan_id, total_urls)
+        results = r.json().get("results", [])
+        urls = []
+        for item in results:
+            parts = item.split(" ", 1)
+            url = parts[1] if len(parts) > 1 else parts[0]
+            urls.append(url)
+        logger.info("Scan %s: spider complete — %d URLs discovered", scan_id, len(urls))
+        return urls
     except Exception:
-        logger.info("Scan %s: spider complete", scan_id)
+        logger.info("Scan %s: spider complete — returning target only", scan_id)
+        return [target_url]
 
 
 async def _get_active_scan_details(client: httpx.AsyncClient, ascan_id: str) -> list[str]:
-    """Fetch currently running plugin names from ZAP active scan.
-    
-    ZAP response format:
-    {
-      "scanProgress": [
-        "https://example.com",
-        {"HostProcess": [{"Plugin": [name, id, release, status, ...]}, ...]}
-      ]
-    }
-    Plugin list: [name, id, release_status, scan_status, ...]
-    """
+    """Fetch currently running plugin names from ZAP active scan."""
     details = []
     try:
         resp = await client.get("/JSON/ascan/view/scanProgress/", params={"scanId": ascan_id}, timeout=30.0)
@@ -281,8 +303,6 @@ async def _get_active_scan_details(client: httpx.AsyncClient, ascan_id: str) -> 
         data = resp.json()
 
         scan_progress = data.get("scanProgress", [])
-        
-        # scanProgress is [url, {HostProcess: [...]}]
         if len(scan_progress) < 2:
             return details
             
@@ -294,7 +314,6 @@ async def _get_active_scan_details(client: httpx.AsyncClient, ascan_id: str) -> 
         if not isinstance(plugins, list):
             return details
         
-        running_count = 0
         for plugin_item in plugins:
             if not isinstance(plugin_item, dict):
                 continue
@@ -302,26 +321,20 @@ async def _get_active_scan_details(client: httpx.AsyncClient, ascan_id: str) -> 
             if not isinstance(plugin_list, list) or len(plugin_list) < 4:
                 continue
             
-            # Plugin format: [name, id, release_status, scan_status, ...]
             name = plugin_list[0]
             status = str(plugin_list[3]).lower()
             
             if status == "running" and name:
-                running_count += 1
-                # Try to get progress from position 4 if available
                 progress = plugin_list[4] if len(plugin_list) > 4 else ""
                 if progress and progress != "0":
                     details.append(f"{name} ({progress}%)")
                 else:
                     details.append(name)
-        
-        if running_count == 0:
-            logger.debug("No running plugins found in scan %s", ascan_id)
-            
+                
     except Exception as exc:
-        logger.debug("Failed to fetch active scan details for scan %s: %s", ascan_id, exc)
+        logger.debug("Failed to fetch active scan details: %s", exc)
 
-    return details[:5]  # Limit to top 5 running plugins
+    return details[:5]
 
 
 async def _get_alert_count(client: httpx.AsyncClient) -> int:
@@ -335,15 +348,20 @@ async def _get_alert_count(client: httpx.AsyncClient) -> int:
 
 
 async def _run_active_scan(client: httpx.AsyncClient, scan_id: str, target_url: str) -> None:
-    # Set active scan options to limit scope
+    """Run ZAP active scan on the target URL.
+    
+    ZAP automatically scans all URLs in its context (discovered by spider),
+    so we only need to start one scan on the base URL.
+    
+    Progress tracking uses alert count growth as a proxy when ZAP's
+    built-in progress is unreliable (often jumps 0% → 100%).
+    """
     try:
-        # Set number of threads for active scan
         await client.get(
-            "/JSON/ascan/action/setOptionThreadCount/", 
+            "/JSON/ascan/action/setOptionThreadCount/",
             params={"Integer": settings.zap_thread_count, "apikey": settings.zap_api_key},
             timeout=30.0
         )
-        logger.info("Scan %s: configured active scan threads=%s", scan_id, settings.zap_thread_count)
     except Exception as exc:
         logger.warning("Scan %s: failed to set active scan options — %s", scan_id, exc)
     
@@ -354,72 +372,106 @@ async def _run_active_scan(client: httpx.AsyncClient, scan_id: str, target_url: 
         resp.raise_for_status()
         data = resp.json()
     except Exception as exc:
-        logger.warning("Scan %s: active scan start request failed — %s: %s", scan_id, type(exc).__name__, exc)
+        logger.warning("Scan %s: active scan start failed — %s: %s", scan_id, type(exc).__name__, exc)
         return
     
-    # Check if response indicates an error
     if "scan" not in data or data.get("scan") is None:
         logger.warning("Scan %s: active scan did not start — response: %s", scan_id, data)
         return
         
     ascan_id = data.get("scan")
-
     if not ascan_id:
-        logger.warning("Scan %s: active scan did not start — no scan ID returned", scan_id)
         return
 
     logger.info("Scan %s: active scan started (id=%s)", scan_id, ascan_id)
 
-    while True:
+    max_iterations = 200  # 200 * 3s = 10 min max
+    stuck_threshold = 30  # iterations with no change = stuck (~90s)
+    
+    prev_alert_count = 0
+    no_change_count = 0
+    scan_started = False  # Wait for first alerts before considering scan "started"
+
+    for iteration in range(max_iterations):
         await asyncio.sleep(3)
 
         if _is_cancelled(scan_id):
+            logger.info("Scan %s: cancelled during active scan", scan_id)
+            try:
+                await client.get("/JSON/ascan/action/stop/", params={"scanId": ascan_id}, timeout=10.0)
+            except Exception:
+                pass
             return
 
+        # Get alert count — our primary progress indicator
+        alert_count = await _get_alert_count(client)
+        
+        # Also try to get ZAP's built-in progress (fallback)
+        zap_progress = 0
+        plugin_details = []
         try:
             resp = await client.get("/JSON/ascan/view/status/", params={"scanId": ascan_id}, timeout=30.0)
             resp.raise_for_status()
-            progress = int(resp.json().get("status", "0"))
-        except Exception as exc:
-            logger.warning("Scan %s: active scan status request failed — %s: %s", scan_id, type(exc).__name__, exc)
-            # Try to fetch alerts found so far
-            try:
-                alert_count = await _get_alert_count(client)
-                if alert_count > 0:
-                    logger.info("Scan %s: active scan found %d alerts before status check failed", scan_id, alert_count)
-            except Exception:
-                pass
-            break
+            zap_progress = int(resp.json().get("status", "0"))
+            plugin_details = await _get_active_scan_details(client, ascan_id)
+        except Exception:
+            # Don't break on status failure — keep polling alerts
+            pass
 
-        # Fetch what plugins are currently running
-        plugin_details = await _get_active_scan_details(client, ascan_id)
-        
-        # Build phase_details: plugin names + alert count
-        details = []
-        if plugin_details:
-            details.extend(plugin_details)
-        
-        # Always show alert count at the end
-        alert_count = await _get_alert_count(client)
+        # Track progress using alert count (more reliable than ZAP's %)
         if alert_count > 0:
-            details.append(f"Found {alert_count} potential issues so far")
+            scan_started = True
+        
+        if alert_count == prev_alert_count:
+            no_change_count += 1
+            if no_change_count >= stuck_threshold and scan_started:
+                logger.warning(
+                    "Scan %s: active scan appears stuck (no new alerts for %ds) — stopping",
+                    scan_id, no_change_count * 3,
+                )
+                try:
+                    await client.get("/JSON/ascan/action/stop/", params={"scanId": ascan_id}, timeout=10.0)
+                except Exception:
+                    pass
+                break
+        else:
+            no_change_count = 0
+            prev_alert_count = alert_count
+
+        # Build progress: use alert count growth, capped at 95%
+        # (leave room for final alert fetching)
+        # Estimate max alerts based on current rate
+        if scan_started and alert_count > 0:
+            # Assume ~50 alerts is "full scan" for a typical site
+            estimated_max = max(alert_count * 2, 50)
+            alert_progress = min(95, int((alert_count / estimated_max) * 100))
+        else:
+            alert_progress = 0
+        
+        # Use whichever progress is higher (ZAP % or alert-based)
+        progress = max(zap_progress, alert_progress)
+
+        details = plugin_details[:3]
 
         record = get(scan_id)
         if record and record.status == ScanStatus.RUNNING:
             record.progress = 40 + int(progress * 0.55)
-            # Show plugin name in phase, fallback to generic text
-            if plugin_details and len(plugin_details) > 0:
+            if plugin_details:
                 plugin_name = plugin_details[0][:40] + "..." if len(plugin_details[0]) > 40 else plugin_details[0]
                 record.phase = f"Testing: {plugin_name}"
+            elif scan_started:
+                record.phase = f"Testing for vulnerabilities ({alert_count} found so far)"
             else:
-                record.phase = f"Testing for vulnerabilities — {progress}%"
+                record.phase = f"Testing for vulnerabilities — warming up"
             record.phase_details = details
             save(record)
 
-        if progress >= 100:
+        # ZAP reports 100% when done
+        if zap_progress >= 100:
             break
 
-    logger.info("Scan %s: active scan complete", scan_id)
+    logger.info("Scan %s: active scan complete (iteration %d/%d, %d alerts)",
+               scan_id, iteration + 1, max_iterations, alert_count)
 
 
 async def _fetch_alerts(client: httpx.AsyncClient, target_url: str) -> list[SecurityIssue]:
@@ -429,7 +481,7 @@ async def _fetch_alerts(client: httpx.AsyncClient, target_url: str) -> list[Secu
         resp.raise_for_status()
         raw_alerts = resp.json().get("alerts", [])
     except Exception as exc:
-        logger.warning("Failed to fetch alerts from ZAP: %s: %s", type(exc).__name__, exc)
+        logger.warning("Failed to fetch alerts from ZAP: %s", type(exc).__name__)
         raw_alerts = []
 
     seen: set[str] = set()
@@ -440,15 +492,12 @@ async def _fetch_alerts(client: httpx.AsyncClient, target_url: str) -> list[Secu
         risk_code = alert.get("riskcode", "0")
         url = alert.get("url", target_url)
 
-        # Deduplicate by name + risk
         dedup_key = f"{name}|{risk_code}"
         if dedup_key in seen:
             continue
         seen.add(dedup_key)
 
         risk = ZAP_RISK_MAP.get(risk_code, RiskLevel.INFO)
-
-        # Use curated explanation if available, otherwise clean up ZAP's description
         explanation = _get_explanation(name, alert)
 
         issues.append(
@@ -466,12 +515,10 @@ async def _fetch_alerts(client: httpx.AsyncClient, target_url: str) -> list[Secu
 
 
 def _get_explanation(name: str, alert: dict) -> dict[str, str]:
-    # Check for curated explanation
     for key, explanation in ALERT_EXPLANATIONS.items():
         if key.lower() in name.lower():
             return explanation
 
-    # Fall back to cleaned-up ZAP description
     desc = alert.get("description", "").strip()
     solution = alert.get("solution", "").strip()
 

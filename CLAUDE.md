@@ -4,12 +4,13 @@ Web-app for QA engineers to scan websites for security vulnerabilities and get h
 
 ## Architecture
 
-**Monorepo: frontend + backend + OWASP ZAP (via Docker)**
+**Monorepo: frontend + backend + OWASP ZAP + Nuclei**
 
 ```
 frontend/   — React 19 + Vite, Axios (SPA, no router — state-driven views)
 backend/    — Python 3.11 + FastAPI, httpx, Pydantic
 ZAP         — OWASP ZAP daemon in Docker (spider + active scan)
+Nuclei      — Fast CVE scanner (runs in backend container)
 ```
 
 All services orchestrated via `docker-compose.yml`.
@@ -27,11 +28,12 @@ All services orchestrated via `docker-compose.yml`.
 
 - `main.py` — FastAPI app, CORS, router mount
 - `routes/scans.py` — API endpoints (POST /scan, GET /scan/{id}, POST /scan/{id}/stop, GET /health)
-- `services/scanner.py` — scan orchestrator (header check → ZAP spider → ZAP active scan → report)
+- `services/scanner.py` — scan orchestrator (header check → Nuclei + ZAP spider in parallel → ZAP active scan → report)
 - `services/header_checker.py` — checks CSP, HSTS, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, cookies, HTTPS
+- `services/nuclei_scanner.py` — Nuclei CLI integration for fast CVE detection
 - `services/zap_scanner.py` — ZAP API integration (spider + active scan, risk mapping, alert dedup)
 - `models/scan.py` — Pydantic schemas (ScanRequest, ScanResponse, ScanReport, ScanRecord, enums)
-- `core/config.py` — settings (zap_base_url, cors_origins, scan_timeout_seconds=600)
+- `core/config.py` — settings (zap_base_url, cors_origins, scan_timeout_seconds=600, nuclei settings)
 - `core/store.py` — in-memory dict store (MVP, lost on restart)
 
 ## Frontend structure (`frontend/src/`)
@@ -57,10 +59,11 @@ All services orchestrated via `docker-compose.yml`.
 ## Scan flow
 
 1. User submits URL → POST /scan → returns scan_id
-2. Frontend polls GET /scan/{id} every 3s
-3. Backend pipeline: header analysis (2%) → ZAP spider (10-40%) → ZAP active scan (40-95%) → build report (95-100%)
-4. If ZAP unavailable — graceful fallback to header-only checks
-5. Results: issues with type (header/zap/custom), risk level, plain-language message, recommendation
+2. Frontend polls GET /scan/{id} every 5s
+3. Backend pipeline: header analysis (2%) → ZAP Spider (crawl) → Nuclei CVE scan (detect) → build report
+4. ZAP Spider discovers URLs (~5min), Nuclei checks for known CVEs (~30s)
+5. ZAP active scan skipped (too slow, many false positives)
+6. Results: issues with type (header/nuclei/zap), risk level, plain-language message, recommendation
 
 ## Commands
 

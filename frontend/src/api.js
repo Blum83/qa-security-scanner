@@ -18,3 +18,12 @@ export async function stopScan(scanId) {
   const { data } = await client.post(`/scan/${scanId}/stop`);
   return data;
 }
+
+export async function getHealth() {
+  const { data } = await client.get("/health");
+  return data;
+}
+
+export function getScanPdfUrl(scanId) {
+  return `${API_BASE}/scan/${scanId}/pdf`;
+}

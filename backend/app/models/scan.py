@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 from enum import Enum
+from typing import Optional
 
 from pydantic import BaseModel, HttpUrl
 
@@ -22,6 +25,7 @@ class RiskLevel(str, Enum):
 class IssueType(str, Enum):
     HEADER = "header"
     ZAP = "zap"
+    NUCLEI = "nuclei"
     CUSTOM = "custom"
 
 
@@ -58,9 +62,9 @@ class ScanReport(BaseModel):
     progress: int = 0
     phase: str = ""
     phase_details: list[str] = []
-    summary: ScanSummary | None = None
+    summary: Optional[ScanSummary] = None
     issues: list[SecurityIssue] = []
-    error: str | None = None
+    error: Optional[str] = None
 
 
 class ScanRecord(BaseModel):
@@ -71,4 +75,4 @@ class ScanRecord(BaseModel):
     phase: str = ""
     phase_details: list[str] = []
     issues: list[SecurityIssue] = []
-    error: str | None = None
+    error: Optional[str] = None

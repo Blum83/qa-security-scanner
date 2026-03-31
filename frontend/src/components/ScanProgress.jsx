@@ -85,7 +85,6 @@ function ScanProgress({ data, onStop }) {
 
       {phaseDetails.length > 0 && (
         <div className="phase-details">
-          <p className="phase-details-title">Current operations:</p>
           <ul className="phase-details-list">
             {phaseDetails.map((detail, i) => (
               <li key={i}>{detail}</li>

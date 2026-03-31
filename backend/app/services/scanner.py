@@ -7,6 +7,7 @@ from app.core.config import settings
 from app.core.store import get, save
 from app.models.scan import ScanStatus
 from app.services.header_checker import check_headers
+from app.services.nuclei_scanner import scan_with_nuclei
 from app.services.zap_scanner import scan_with_zap
 
 logger = logging.getLogger(__name__)
@@ -47,50 +48,68 @@ async def run_scan(scan_id: str, target_url: str) -> None:
         save(record)
         logger.info("Scan %s: header checks complete — %d issues", scan_id, len(header_issues))
 
-        # Phase 2: ZAP scan
+        # Phase 2: Run ZAP and Nuclei in parallel
         if _is_cancelled(scan_id):
-            logger.info("Scan %s: cancelled before ZAP scan", scan_id)
+            logger.info("Scan %s: cancelled before parallel scans", scan_id)
             return
 
-        record.phase = "Crawling the website (ZAP Spider)"
-        record.progress = 12
+        record.phase = "Running vulnerability scans"
+        record.progress = 15
         save(record)
-        logger.info("Scan %s: running ZAP scan", scan_id)
+        logger.info("Scan %s: starting ZAP + Nuclei scans", scan_id)
 
+        # Each task manages its own timeout internally.
+        # We just wait for both to finish.
+        zap_task = asyncio.create_task(scan_with_zap(scan_id, target_url))
+        nuclei_task = asyncio.create_task(scan_with_nuclei(scan_id, target_url))
+
+        # Wait for both with overall timeout
         try:
-            # Wrap ZAP scan in timeout to prevent hanging forever
-            zap_issues = await asyncio.wait_for(
-                scan_with_zap(scan_id, target_url),
-                timeout=settings.zap_scan_timeout_seconds
+            await asyncio.wait_for(
+                asyncio.gather(zap_task, nuclei_task, return_exceptions=True),
+                timeout=settings.scan_timeout_seconds,
             )
-            logger.info("Scan %s: ZAP scan completed within timeout", scan_id)
         except asyncio.TimeoutError:
-            logger.error("Scan %s: ZAP scan timed out after %d seconds", 
-                        scan_id, settings.zap_scan_timeout_seconds)
-            record = get(scan_id)
-            if record and record.status != ScanStatus.CANCELLED:
-                record.phase = "ZAP scan timed out"
-                record.progress = 95
-                save(record)
-            zap_issues = []
+            logger.warning("Scan %s: overall timeout reached (%ds)", scan_id, settings.scan_timeout_seconds)
+            zap_task.cancel()
+            nuclei_task.cancel()
+            # Give tasks a moment to clean up
+            await asyncio.gather(zap_task, nuclei_task, return_exceptions=True)
 
         if _is_cancelled(scan_id):
-            logger.info("Scan %s: cancelled during ZAP scan", scan_id)
+            logger.info("Scan %s: cancelled after parallel scans", scan_id)
             return
 
-        record.issues.extend(zap_issues)
-        record.progress = 95
-        save(record)
-        logger.info("Scan %s: ZAP scan complete — %d issues", scan_id, len(zap_issues))
+        # Collect results from both tasks (they already saved issues to record)
+        record = get(scan_id)
+        if not record:
+            return
 
+        # Brief pause for "Collecting results" phase visibility
+        record.progress = 92
+        record.phase = "Collecting scan results"
+        save(record)
+        await asyncio.sleep(1.5)
+
+        record.progress = 95
+        record.phase = "All scans complete"
+        save(record)
+
+    except asyncio.CancelledError:
+        logger.info("Scan %s: cancelled", scan_id)
+        return
     except Exception:
         logger.exception("Scan %s failed", scan_id)
         record = get(scan_id)
-        if record.status == ScanStatus.CANCELLED:
+        if record and record.status == ScanStatus.CANCELLED:
             return
         record.status = ScanStatus.FAILED
         record.error = "The scan encountered an unexpected error. Please try again."
         save(record)
+        return
+
+    record = get(scan_id)
+    if not record or record.status == ScanStatus.CANCELLED:
         return
 
     record.phase = "Building report"
