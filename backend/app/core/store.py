@@ -31,11 +31,17 @@ def _init_db() -> None:
             phase TEXT NOT NULL DEFAULT '',
             phase_details TEXT NOT NULL DEFAULT '[]',
             issues TEXT NOT NULL DEFAULT '[]',
-            error TEXT
+            error TEXT,
+            created_at TEXT NOT NULL DEFAULT ''
         )
         """
     )
-    conn.commit()
+    # Safe migration: add created_at to existing databases that predate this column
+    try:
+        conn.execute("ALTER TABLE scans ADD COLUMN created_at TEXT NOT NULL DEFAULT ''")
+        conn.commit()
+    except Exception:
+        pass  # Column already exists
     conn.close()
 
 
@@ -71,6 +77,7 @@ def _record_to_dict(row: sqlite3.Row) -> ScanRecord:
         phase_details=phase_details,
         issues=issues,
         error=row["error"],
+        created_at=row["created_at"] or "",
     )
 
 
@@ -91,9 +98,9 @@ def save(record: ScanRecord) -> None:
     conn = _get_conn()
     conn.execute(
         """
-        INSERT OR REPLACE INTO scans 
-        (scan_id, status, target_url, progress, phase, phase_details, issues, error)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT OR REPLACE INTO scans
+        (scan_id, status, target_url, progress, phase, phase_details, issues, error, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             record.scan_id,
@@ -104,6 +111,7 @@ def save(record: ScanRecord) -> None:
             phase_details_json,
             issues_json,
             record.error,
+            record.created_at,
         ),
     )
     conn.commit()

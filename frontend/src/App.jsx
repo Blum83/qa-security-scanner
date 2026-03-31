@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { Routes, Route, useNavigate } from "react-router-dom";
 import Navbar from "./components/Navbar";
 import Hero from "./components/Hero";
 import ScanForm from "./components/ScanForm";
@@ -6,16 +7,18 @@ import Features from "./components/Features";
 import ScanProgress from "./components/ScanProgress";
 import ScanReport from "./components/ScanReport";
 import ScheduleManager from "./components/ScheduleManager";
+import ScanDashboard from "./components/ScanDashboard";
 import { startScan, getScan, stopScan, getHealth } from "./api";
 import "./App.css";
 
-const POLL_INTERVAL = 5000; // 5 seconds
-const MAX_POLL_ATTEMPTS = 360; // 30 minutes max polling (360 * 5s)
-const MAX_RETRIES = 3; // Max consecutive failed polls before giving up
-const RETRY_DELAY = 2000; // 2 seconds between retries
+const POLL_INTERVAL = 5000;
+const MAX_POLL_ATTEMPTS = 360;
+const MAX_RETRIES = 3;
+const RETRY_DELAY = 2000;
 
 function App() {
-  const [view, setView] = useState("form");
+  const navigate = useNavigate();
+  const [view, setView] = useState("form"); // "form" | "scanning" | "report"
   const [scanData, setScanData] = useState(null);
   const [scanId, setScanId] = useState(null);
   const [error, setError] = useState(null);
@@ -24,17 +27,17 @@ function App() {
   const pollAttemptsRef = useRef(0);
   const retryCountRef = useRef(0);
 
-  // Load scan state from localStorage on mount
+  // Recover in-progress scan from localStorage on mount
   useEffect(() => {
     const savedScanId = localStorage.getItem("currentScanId");
     if (savedScanId) {
       setScanId(savedScanId);
       setView("scanning");
+      navigate("/", { replace: true });
       pollScan(savedScanId, true);
     }
   }, []);
 
-  // Check scanner availability on mount
   useEffect(() => {
     getHealth()
       .then((data) => setScanners(data.scanners || {}))
@@ -60,9 +63,7 @@ function App() {
   };
 
   const pollScan = useCallback((id, isRecovery = false) => {
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current);
-    }
+    if (intervalRef.current) clearInterval(intervalRef.current);
 
     if (!isRecovery) {
       pollAttemptsRef.current = 0;
@@ -72,7 +73,7 @@ function App() {
     intervalRef.current = setInterval(async () => {
       try {
         const data = await getScan(id);
-        retryCountRef.current = 0; // Reset retry counter on success
+        retryCountRef.current = 0;
         setScanData(data);
 
         if (
@@ -96,7 +97,6 @@ function App() {
         }
       } catch {
         retryCountRef.current += 1;
-
         if (retryCountRef.current >= MAX_RETRIES) {
           clearInterval(intervalRef.current);
           intervalRef.current = null;
@@ -104,10 +104,8 @@ function App() {
           setError("Lost connection to the scanner. Please try again.");
           setView("form");
         } else {
-          // Retry after delay
           setTimeout(() => {
             if (intervalRef.current) {
-              // Only retry if interval wasn't cleared
               getScan(id)
                 .then((data) => {
                   retryCountRef.current = 0;
@@ -123,9 +121,7 @@ function App() {
                     setView(data.status === "cancelled" ? "form" : "report");
                   }
                 })
-                .catch(() => {
-                  // Will be caught by next interval iteration
-                });
+                .catch(() => {});
             }
           }, RETRY_DELAY);
         }
@@ -138,7 +134,7 @@ function App() {
     try {
       await stopScan(scanId);
     } catch {
-      // Stop failed — just go back
+      // ignore
     }
     if (intervalRef.current) {
       clearInterval(intervalRef.current);
@@ -164,26 +160,50 @@ function App() {
 
   return (
     <div className="app">
-      <Navbar onSchedules={() => setView("schedules")} />
+      <Navbar />
       <main className="main">
         {error && <div className="error-banner">{error}</div>}
 
-        {view === "form" && (
-          <>
-            <Hero scanners={scanners} />
-            <ScanForm onScan={handleScan} />
-            <Features />
-          </>
-        )}
-        {view === "scanning" && (
-          <ScanProgress data={scanData} onStop={handleStop} />
-        )}
-        {view === "report" && (
-          <ScanReport data={scanData} onReset={handleReset} scanId={scanId} />
-        )}
-        {view === "schedules" && (
-          <ScheduleManager onBack={() => setView("form")} />
-        )}
+        <Routes>
+          <Route
+            path="/"
+            element={
+              <>
+                {view === "form" && (
+                  <>
+                    <Hero scanners={scanners} />
+                    <ScanForm onScan={handleScan} />
+                    <Features />
+                  </>
+                )}
+                {view === "scanning" && (
+                  <ScanProgress data={scanData} onStop={handleStop} />
+                )}
+                {view === "report" && (
+                  <ScanReport data={scanData} onReset={handleReset} scanId={scanId} />
+                )}
+              </>
+            }
+          />
+          <Route
+            path="/schedules"
+            element={<ScheduleManager onBack={() => navigate("/")} />}
+          />
+          <Route
+            path="/history"
+            element={
+              <ScanDashboard
+                onViewReport={(data, id) => {
+                  setScanData(data);
+                  setScanId(id);
+                  setView("report");
+                  navigate("/");
+                }}
+                onBack={() => navigate("/")}
+              />
+            }
+          />
+        </Routes>
       </main>
     </div>
   );

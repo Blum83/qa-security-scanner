@@ -68,6 +68,14 @@ class ScanReport(BaseModel):
     error: Optional[str] = None
 
 
+class ScanListItem(BaseModel):
+    scan_id: str
+    status: ScanStatus
+    target_url: str
+    created_at: str = ""
+    summary: Optional[ScanSummary] = None
+
+
 class ScanRecord(BaseModel):
     scan_id: str
     status: ScanStatus
@@ -77,3 +85,4 @@ class ScanRecord(BaseModel):
     phase_details: list[str] = []
     issues: list[SecurityIssue] = []
     error: Optional[str] = None
+    created_at: str = ""

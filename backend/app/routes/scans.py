@@ -1,12 +1,14 @@
 import asyncio
 import logging
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 
 from app.core.store import get, save, get_all
 from app.models.scan import (
+    ScanListItem,
     ScanRecord,
     ScanReport,
     ScanRequest,
@@ -38,6 +40,7 @@ async def start_scan(request: ScanRequest):
         scan_id=scan_id,
         status=ScanStatus.PENDING,
         target_url=target_url,
+        created_at=datetime.now(tz=timezone.utc).isoformat(),
     )
     save(record)
 
@@ -47,14 +50,21 @@ async def start_scan(request: ScanRequest):
     return ScanResponse(scan_id=scan_id, status=ScanStatus.PENDING)
 
 
-@router.get("", response_model=list[ScanResponse])
+@router.get("", response_model=list[ScanListItem])
 async def list_scans():
-    """List all scans (most recent first)."""
+    """List all scans with summary counts (most recent first)."""
     records = get_all()
-    return [
-        ScanResponse(scan_id=r.scan_id, status=r.status)
-        for r in records
-    ]
+    result = []
+    for r in records:
+        finished = r.status in (ScanStatus.COMPLETED, ScanStatus.FAILED, ScanStatus.CANCELLED)
+        result.append(ScanListItem(
+            scan_id=r.scan_id,
+            status=r.status,
+            target_url=r.target_url,
+            created_at=r.created_at,
+            summary=_build_summary(r) if finished and r.issues else None,
+        ))
+    return result
 
 
 @router.get("/{scan_id}", response_model=ScanReport)

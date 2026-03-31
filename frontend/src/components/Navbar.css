@@ -17,6 +17,11 @@
   display: flex;
   align-items: center;
   gap: 10px;
+  text-decoration: none;
+}
+
+.navbar-brand:hover .navbar-title {
+  color: #a5b4fc;
 }
 
 .navbar-icon {
@@ -52,15 +57,11 @@
   color: #a5b4fc;
 }
 
+.navbar-link--active {
+  color: #a5b4fc;
+}
+
 .navbar-link svg {
   flex-shrink: 0;
 }
 
-.navbar-link-btn {
-  background: transparent;
-  border: none;
-  padding: 0;
-  cursor: pointer;
-  font-size: inherit;
-  font-family: inherit;
-}

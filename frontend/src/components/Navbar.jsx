@@ -1,18 +1,26 @@
+import { NavLink, Link } from "react-router-dom";
 import "./Navbar.css";
 
-function Navbar({ onSchedules }) {
+function Navbar() {
   return (
     <nav className="navbar">
       <div className="navbar-inner">
-        <div className="navbar-brand">
+        <Link to="/" className="navbar-brand">
           <svg className="navbar-icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
             <path d="m9 12 2 2 4-4" />
           </svg>
           <span className="navbar-title">Security Scanner</span>
-        </div>
+        </Link>
         <div className="navbar-links">
-          <button className="navbar-link navbar-link-btn" onClick={onSchedules}>
+          <NavLink to="/history" className={({ isActive }) => "navbar-link" + (isActive ? " navbar-link--active" : "")}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="10" />
+              <polyline points="12 6 12 12 16 14" />
+            </svg>
+            History
+          </NavLink>
+          <NavLink to="/schedules" className={({ isActive }) => "navbar-link" + (isActive ? " navbar-link--active" : "")}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
               <line x1="16" y1="2" x2="16" y2="6" />
@@ -20,7 +28,7 @@ function Navbar({ onSchedules }) {
               <line x1="3" y1="10" x2="21" y2="10" />
             </svg>
             Schedules
-          </button>
+          </NavLink>
           <a
             href="http://localhost:8000/docs"
             target="_blank"

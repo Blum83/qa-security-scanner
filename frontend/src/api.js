@@ -28,6 +28,11 @@ export function getScanPdfUrl(scanId) {
   return `${API_BASE}/scan/${scanId}/pdf`;
 }
 
+export async function listScans() {
+  const { data } = await client.get("/scan");
+  return data;
+}
+
 export async function listSchedules() {
   const { data } = await client.get("/schedules");
   return data;

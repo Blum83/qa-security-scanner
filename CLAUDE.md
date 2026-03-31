@@ -7,7 +7,7 @@ Web-app for QA engineers to scan websites for security vulnerabilities and get h
 **Monorepo: frontend + backend + OWASP ZAP + Nuclei**
 
 ```
-frontend/   — React 19 + Vite, Axios (SPA, no router — state-driven views)
+frontend/   — React 19 + Vite, Axios, React Router v7 (URL routing + state-driven scan flow)
 backend/    — Python 3.11 + FastAPI, httpx, Pydantic, APScheduler
 ZAP         — OWASP ZAP daemon in Docker (spider + active scan)
 Nuclei      — Fast CVE scanner (runs in backend container)
@@ -44,13 +44,14 @@ All services orchestrated via `docker-compose.yml`.
 
 ## Frontend structure (`frontend/src/`)
 
-- `App.jsx` — main state machine: "form" → "scanning" → "report" → "schedules". Polls GET /scan/{id} every 5s
+- `App.jsx` — route shell (React Router) + scan state machine: "form" → "scanning" → "report". Polls GET /scan/{id} every 5s
 - `api.js` — Axios client (baseURL: http://localhost:8000); scan + schedule API functions
-- `components/Navbar.jsx` — header with Schedules button and API Docs link
+- `components/Navbar.jsx` — header with NavLink (History→/history, Schedules→/schedules), logo Link→/, API Docs in new tab
 - `components/Hero.jsx` — landing hero section
 - `components/ScanForm.jsx` — URL input (auto-adds https://)
 - `components/ScanProgress.jsx` — live progress bar, phase tracking, elapsed time, stop button
 - `components/ScanReport.jsx` — results: summary cards + issues grouped by risk + PDF download
+- `components/ScanDashboard.jsx` — scan history: stats (total/completed/issues/critical/high) + list of all scans with risk pills, click to open report
 - `components/ScheduleManager.jsx` — schedule list, create form (cron + webhook config), pause/resume/delete
 - `components/Features.jsx` — feature cards section
 
@@ -62,6 +63,7 @@ All services orchestrated via `docker-compose.yml`.
 | GET    | /scan/{scan_id}             | Poll status & results                |
 | POST   | /scan/{scan_id}/stop        | Cancel running scan                  |
 | GET    | /scan/{scan_id}/pdf         | Download PDF report                  |
+| GET    | /scan                       | List all scans with summaries        |
 | GET    | /health                     | Health check (ZAP + Nuclei status)   |
 | POST   | /schedules                  | Create schedule                      |
 | GET    | /schedules                  | List all schedules                   |
@@ -113,7 +115,8 @@ cd frontend && npm install && npm run dev
 ## Conventions
 
 - CSS: component-scoped files (Component.css), CSS variables for theming (--bg-nav, etc.)
-- No React Router — single-page state machine in App.jsx
+- React Router v7: `/` (scan flow), `/history`, `/schedules` — logo and nav links use `Link`/`NavLink`
+- Scan flow (form → scanning → report) remains state-driven within the `/` route
 - Backend uses async/await throughout
 - Pydantic models for all request/response schemas
 - Synchronous blocking operations (ssl probes, smtplib) run in `asyncio.run_in_executor`
